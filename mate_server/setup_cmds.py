@@ -89,11 +89,21 @@ def _icacls(*args: str) -> None:
 
 def secure(data_dir: Path, config: Path) -> None:
     """Data: Administrators + SYSTEM full control, the service account modify, nobody else.
-    Config (it holds the password): the service account may only read it."""
+    Config (it holds the password): the service account may only read it.
+
+    The service account also gets WRITE_DAC: Mate locks its own private folders (certs/,
+    api-v2-private/) to its account alone, and Modify does not allow rewriting a folder's
+    permissions. Without it, a folder this installer created (owned by SYSTEM, not the service)
+    cannot be locked, Mate refuses to install its application certificate, and the login page
+    reports provisioning_required.
+
+    No /T: the root's inheritable entries propagate to every child that inherits, and a folder Mate
+    has already locked (protected, readable by the service only) is left alone instead of failing
+    the install."""
     if sys.platform != "win32":
         return
     _icacls(str(data_dir), "/inheritance:r", "/grant:r",
-            f"{_ADMINS}:(OI)(CI)F", f"{_SYSTEM}:(OI)(CI)F", f"{_LOCAL_SERVICE}:(OI)(CI)M", "/T", "/C", "/Q")
+            f"{_ADMINS}:(OI)(CI)F", f"{_SYSTEM}:(OI)(CI)F", f"{_LOCAL_SERVICE}:(OI)(CI)(M,WDAC)", "/C", "/Q")
     _icacls(str(config), "/inheritance:r", "/grant:r",
             f"{_ADMINS}:F", f"{_SYSTEM}:F", f"{_LOCAL_SERVICE}:R", "/C", "/Q")
 
@@ -102,7 +112,8 @@ def configure(data_dir: Path, port: int, password: str) -> int:
     if not 1 <= port <= 65535:
         print(f"port out of range: {port}", file=sys.stderr)
         return 2
-    for sub in ("", "logs", "certs", "tmp"):
+    # Not certs/: Mate creates and locks that one itself, as the service account.
+    for sub in ("", "logs", "tmp"):
         (data_dir / sub).mkdir(parents=True, exist_ok=True)
     config = data_dir / "mate.env"
     created = write_config(config, data_dir=data_dir, port=port, password=password)

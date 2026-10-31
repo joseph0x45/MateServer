@@ -7,4 +7,4 @@ the web server as children, honours Mate's relaunch code, and swaps in new relea
 """
 
 # The shell's own version, independent of Mate's — the two ship on different schedules.
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"

@@ -32,7 +32,7 @@ it left off. Delete `C:\ProgramData\LeapMotorMate` afterwards to remove those to
 not contain `"` or end with `\`:
 
 ```powershell
-msiexec /i LeapMotor-Mate-Server-0.1.0-x64.msi /qn MATEPASSWORD="something-long" MATEPORT=4000 OPENFIREWALL=1
+msiexec /i LeapMotor-Mate-Server-0.1.1-x64.msi /qn MATEPASSWORD="something-long" MATEPORT=4000 OPENFIREWALL=1
 ```
 
 ## Install on Linux (systemd; x86-64, arm64, armv7)
