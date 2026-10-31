@@ -1,0 +1,89 @@
+# Build the Windows installer and attach it to a GitHub release.
+#
+#   * Publishing a release (tag vX.Y.Z) builds the .msi on a clean Windows runner and uploads it,
+#     with its .sha256, to that release.
+#   * Running the workflow by hand builds the same .msi as a downloadable artifact, with no release:
+#     a way to try a build before tagging it.
+#
+# The tag has to match SERVER_VERSION in mate_server/__init__.py. They are two copies of one fact,
+# and a release whose package calls itself something else is a support question waiting to happen,
+# so a mismatch fails the build instead of shipping.
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # upload assets to the release
+  id-token: write        # build provenance (public repositories only, see below)
+  attestations: write
+
+jobs:
+  msi:
+    name: Windows installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        # The build script is written for Windows PowerShell 5.1 — the one every customer machine
+        # has — so build with that, not pwsh.
+        shell: powershell
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Check the tag matches SERVER_VERSION
+        id: version
+        run: |
+          $line = Select-String -Path mate_server\__init__.py -Pattern '^SERVER_VERSION\s*=\s*"([^"]+)"'
+          $version = $line.Matches[0].Groups[1].Value
+          if ("${{ github.event_name }}" -eq "release") {
+            $tag = "${{ github.event.release.tag_name }}"
+            if ($tag -ne "v$version") {
+              Write-Host "::error::release tag '$tag' does not match SERVER_VERSION '$version' (expected 'v$version')"
+              exit 1
+            }
+          }
+          "version=$version" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+          Write-Host "building $version"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: |
+          python -m pip install --quiet pytest certifi
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m pytest -q -p no:cacheprovider tests
+
+      - name: Build the MSI
+        run: .\packaging\windows\build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      # Proves which workflow run, commit and runner produced the file, checkable with
+      # `gh attestation verify <file> --repo joseph0x45/MateServer`. GitHub only offers attestations
+      # for private repositories on Enterprise plans, so it is skipped while this one is private.
+      - name: Build provenance
+        if: github.event.repository.private == false
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2
+        with:
+          subject-path: dist/*.msi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: LeapMotor-Mate-Server-${{ steps.version.outputs.version }}-x64
+          path: |
+            dist/*.msi
+            dist/*.msi.sha256
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem dist\*.msi, dist\*.msi.sha256 | ForEach-Object { $_.FullName }
+          gh release upload "${{ github.event.release.tag_name }}" @files --clobber --repo "${{ github.repository }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $sum = Get-Content dist\*.msi.sha256
+          Write-Host "uploaded: $sum"
