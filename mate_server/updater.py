@@ -27,7 +27,7 @@ TAG_API = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 TARBALL = f"https://github.com/{REPO}/archive/refs/tags/{{tag}}.tar.gz"
 # The server shell's own releases. Only ever ASKED, never installed from: the shell lives in a
 # read-only install directory and is upgraded by re-running the installer.
-SERVER_REPO = "ProtossBlaster/MateServer"
+SERVER_REPO = "joseph0x45/MateServer"
 SERVER_RELEASES_API = f"https://api.github.com/repos/{SERVER_REPO}/releases/latest"
 PAYLOAD_PARTS = ("web", "poller")
 USER_AGENT = "leapmotor-mate-server"
