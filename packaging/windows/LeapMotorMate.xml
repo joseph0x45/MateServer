@@ -1,0 +1,33 @@
+<!--
+  WinSW 2.12 service definition, installed next to the wrapper (LeapMotorMate.exe).
+
+  Static on purpose: %BASE% is the wrapper's own folder and WinSW expands environment variables, so
+  nothing here is filled in at install time. The service itself (account, start type, recovery) is
+  registered by the MSI, not by WinSW - the <serviceaccount>/<onfailure> elements WinSW would read
+  during `winsw install` are therefore absent.
+-->
+<service>
+  <id>LeapMotorMate</id>
+  <name>LeapMotor Mate</name>
+  <description>Trip tracking, charge logging and remote control for Leapmotor vehicles.</description>
+
+  <executable>%BASE%\python\python.exe</executable>
+  <arguments>-I "%BASE%\mate-server.py" serve --config "%ProgramData%\LeapMotorMate\mate.env"</arguments>
+  <workingdirectory>%ProgramData%\LeapMotorMate</workingdirectory>
+
+  <!-- Stop by asking: WinSW's Ctrl+C cannot reach a service account's console ("Failed to attach to
+       console. Access is denied") and would end in TerminateProcess. `mate-server stop` drops a request
+       file the supervisor watches; it stops poller and web itself, checkpoints the database and exits.
+       WinSW appends <arguments> to this command line; `stop` ignores that tail. If the supervisor were
+       ever killed anyway, a job object takes the children down with it. -->
+  <stopexecutable>%BASE%\python\python.exe</stopexecutable>
+  <stoparguments>-I "%BASE%\mate-server.py" stop --config "%ProgramData%\LeapMotorMate\mate.env"</stoparguments>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <stoptimeout>45 sec</stoptimeout>
+
+  <logpath>%ProgramData%\LeapMotorMate\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+</service>

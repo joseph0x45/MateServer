@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LeapMotor Mate server - Windows Installer package (WiX 5).
+
+      build_msi.ps1   (stages the files, then:)
+      wix build -arch x64 -d Version=0.1.0 -d RootDir=build\root -ext UI -ext Util -ext Firewall Product.wxs
+
+  Per machine, so it needs administrator rights: a Windows service is a machine-wide thing and there
+  is no per-user way to install one. Everything Mate needs is inside - Python 3.12, uv, the service
+  wrapper and the server shell - so the machine needs nothing installed beforehand.
+
+  Upgrades: install the newer .msi over the old one. Windows Installer removes the old version and
+  installs the new; the data and the configuration live in C:\ProgramData\LeapMotorMate, which this
+  package never owns, so they survive. Mate itself updates on its own, without a new .msi.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+
+  <Package
+      Name="LeapMotor Mate Server"
+      Manufacturer="ProtossBlaster"
+      Version="$(Version)"
+      Language="1033"
+      Compressed="yes"
+      Scope="perMachine"
+      UpgradeCode="3C2218BC-F7D3-4FFF-B8ED-94876E00A394">
+
+    <!-- The UpgradeCode above is what Windows matches an older copy on: it must never change. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Launch Condition="VersionNT &gt;= 603" Message="LeapMotor Mate Server needs Windows 10, Windows Server 2016 or later." />
+
+    <Icon Id="MateIcon" SourceFile="Mate.ico" />
+    <Property Id="ARPPRODUCTICON" Value="MateIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ProtossBlaster/leapmotor-mate" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/ProtossBlaster/leapmotor-mate/issues" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- ── settings asked on the install page ─────────────────────────────────────────────── -->
+
+    <!-- Secure: in a per-machine install only Secure properties travel from the dialogs to the
+         elevated part of the installation. Without it the values typed here would be dropped.
+         The port is remembered in the registry, so an upgrade offers the one already in use. -->
+    <Property Id="MATEPORT" Value="4000" Secure="yes">
+      <RegistrySearch Id="RememberedPort" Root="HKLM" Key="Software\LeapMotorMate" Name="Port" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="OPENFIREWALL" Value="1" Secure="yes" />
+    <!-- Hidden: kept out of the installer log. -->
+    <Property Id="MATEPASSWORD" Hidden="yes" Secure="yes" />
+    <Property Id="MATEPASSWORD2" Hidden="yes" />
+
+    <!-- An existing configuration means this is an upgrade or a reinstall: the password may then be
+         left empty, which keeps the current one. -->
+    <Property Id="CONFIGEXISTS" Secure="yes">
+      <DirectorySearch Id="DataDirSearch" Path="[CommonAppDataFolder]LeapMotorMate" Depth="0">
+        <FileSearch Id="ConfigSearch" Name="mate.env" />
+      </DirectorySearch>
+    </Property>
+
+    <!-- Characters the password cannot hold, as properties: Windows Installer conditions have no
+         escape for a quote. The password travels to the configure step on a command line, where a
+         quote or a trailing backslash would end the argument early. -->
+    <Property Id="CHAR_QUOTE" Value="&quot;" />
+    <Property Id="CHAR_BACKSLASH" Value="\" />
+    <Property Id="CHAR_SPACE" Value=" " />
+
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Sequence="ui" After="CostFinalize"
+                 Value="Mate is starting as a Windows service. Open http://localhost:[MATEPORT] (or the Start menu shortcut) in a minute or two - the first start downloads Mate itself." />
+
+    <!-- ── files ───────────────────────────────────────────────────────────────────────────── -->
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="LeapMotorMate" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- The staged tree from build_msi.ps1: Python, uv, the shell. The wrapper is excluded here
+         because the service has to be declared in the same component as its executable. -->
+    <Files Include="$(RootDir)\**" Directory="INSTALLFOLDER">
+      <Exclude Files="$(RootDir)\LeapMotorMate.exe" />
+    </Files>
+
+    <Component Id="MateService" Directory="INSTALLFOLDER" Guid="608F191F-D1C7-476B-B903-73BDB0F80EC7">
+      <File Id="ServiceWrapper" Source="$(RootDir)\LeapMotorMate.exe" KeyPath="yes" />
+      <ServiceInstall Id="MateServiceInstall"
+                      Name="LeapMotorMate"
+                      DisplayName="LeapMotor Mate"
+                      Description="Trip tracking, charge logging and remote control for Leapmotor vehicles."
+                      Type="ownProcess"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Account="NT AUTHORITY\LocalService"
+                      Vital="yes">
+        <util:ServiceConfig FirstFailureActionType="restart"
+                            SecondFailureActionType="restart"
+                            ThirdFailureActionType="restart"
+                            RestartServiceDelayInSeconds="30"
+                            ResetPeriodInDays="1" />
+      </ServiceInstall>
+      <!-- Stop on upgrade and uninstall (WinSW then runs `mate-server stop`), start after install. -->
+      <ServiceControl Id="MateServiceControl" Name="LeapMotorMate" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+    </Component>
+
+    <Component Id="RememberSettings" Directory="INSTALLFOLDER" Guid="8F7CFA8C-494B-45C8-A3D4-67DAA1D96EAB">
+      <RegistryValue Root="HKLM" Key="Software\LeapMotorMate" Name="Port" Type="string" Value="[MATEPORT]" KeyPath="yes" />
+    </Component>
+
+    <!-- Local subnet only: the LAN can reach Mate, the wider internet cannot even if the router
+         forwards the port. Remote access belongs behind a VPN or a TLS reverse proxy. -->
+    <Component Id="Firewall" Directory="INSTALLFOLDER" Guid="2F6ADC4C-C4AC-4FE7-8C4E-FFD0416FE5F0"
+               Condition="OPENFIREWALL = &quot;1&quot;">
+      <fw:FirewallException Id="MateFirewall" Name="LeapMotor Mate" Port="[MATEPORT]" Protocol="tcp"
+                            Scope="localSubnet" Profile="all" IgnoreFailure="yes" />
+      <RegistryValue Root="HKLM" Key="Software\LeapMotorMate" Name="Firewall" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder" Guid="24C36A1F-C5FC-48BD-A1A5-068987EA1A87">
+      <util:InternetShortcut Id="MateShortcut" Name="LeapMotor Mate" Target="http://localhost:[MATEPORT]/"
+                             Type="url" IconFile="[INSTALLFOLDER]Mate.ico" />
+      <RegistryValue Root="HKLM" Key="Software\LeapMotorMate" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- ── custom actions ──────────────────────────────────────────────────────────────────── -->
+
+    <!-- Write mate.env (port, password) and lock the data folder down to the service account.
+         Deferred + not impersonated = runs as SYSTEM, after the files are in and before the service
+         starts. HideTarget and the Hidden property keep the password out of the log. -->
+    <Property Id="ConfigureMate" Hidden="yes" />
+    <SetProperty Id="ConfigureMate" Sequence="execute" Before="ConfigureMate"
+                 Value="&quot;[INSTALLFOLDER]python\python.exe&quot; -I &quot;[INSTALLFOLDER]mate-server.py&quot; configure --data-dir &quot;[CommonAppDataFolder]LeapMotorMate&quot; --port [MATEPORT] --password &quot;[MATEPASSWORD]&quot;" />
+    <CustomAction Id="ConfigureMate" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+
+    <!-- On a real uninstall, delete what the server downloaded (Mate, Python environments, logs);
+         keep the database, its key, the certificates and the configuration - the driving history.
+         NOT UPGRADINGPRODUCTCODE: an upgrade removes the old version first, and that removal must
+         not throw away Mate and force a full re-download. -->
+    <SetProperty Id="CleanupMate" Sequence="execute" Before="CleanupMate"
+                 Value="&quot;[INSTALLFOLDER]python\python.exe&quot; -I &quot;[INSTALLFOLDER]mate-server.py&quot; uninstall-cleanup --data-dir &quot;[CommonAppDataFolder]LeapMotorMate&quot;" />
+    <CustomAction Id="CleanupMate" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureMate" After="InstallFiles" Condition="NOT (REMOVE=&quot;ALL&quot;)" />
+      <Custom Action="CleanupMate" After="StopServices"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <!-- ── user interface ──────────────────────────────────────────────────────────────────── -->
+
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+    <UI Id="MateUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <!-- Welcome → Licence → Mate settings → Ready -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Print" Event="DoAction" Value="WixUIPrintEula_$(sys.BUILDARCHSHORT)" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="MateSettingsDlg" Condition="LicenseAccepted = &quot;1&quot;" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MateSettingsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Dialog Id="MateSettingsDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Mate settings" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="The web address and the password for Mate's web page." />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+
+        <Control Id="PortLabel" Type="Text" X="20" Y="54" Width="330" Height="10" NoPrefix="yes" Text="&amp;Port (Mate will be at http://this-computer:port):" />
+        <Control Id="Port" Type="Edit" X="20" Y="66" Width="50" Height="17" Property="MATEPORT" Integer="yes" />
+
+        <Control Id="PasswordLabel" Type="Text" X="20" Y="92" Width="330" Height="18" NoPrefix="yes"
+                 Text="P&amp;assword for the web page. Choose a strong one: whoever can open the page can unlock your car." />
+        <Control Id="Password" Type="Edit" X="20" Y="112" Width="200" Height="17" Property="MATEPASSWORD" Password="yes" />
+        <Control Id="ConfirmLabel" Type="Text" X="20" Y="134" Width="330" Height="10" NoPrefix="yes" Text="&amp;Confirm the password:" />
+        <Control Id="Confirm" Type="Edit" X="20" Y="146" Width="200" Height="17" Property="MATEPASSWORD2" Password="yes" />
+        <Control Id="KeepNote" Type="Text" X="20" Y="167" Width="330" Height="10" NoPrefix="yes"
+                 Text="Mate is already configured: leave both fields empty to keep the current password."
+                 HideCondition="NOT CONFIGEXISTS" ShowCondition="CONFIGEXISTS" />
+
+        <Control Id="FirewallBox" Type="CheckBox" X="20" Y="186" Width="330" Height="18" Property="OPENFIREWALL" CheckBoxValue="1"
+                 Text="Allow other devices on the &amp;local network to open Mate (adds a Windows Firewall rule)" />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="LicenseAgreementDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <!-- Checked in order; the first problem found is the one shown. -->
+          <Publish Property="MATEERROR" Value="{}" Order="1" />
+          <Publish Property="MATEERROR" Value="Enter a port between 1 and 65535." Order="2"
+                   Condition="NOT MATEERROR AND (NOT MATEPORT OR MATEPORT &lt; 1 OR MATEPORT &gt; 65535)" />
+          <Publish Property="MATEERROR" Value="Choose a password for Mate's web page." Order="3"
+                   Condition="NOT MATEERROR AND NOT CONFIGEXISTS AND NOT MATEPASSWORD" />
+          <Publish Property="MATEERROR" Value="The two passwords are not the same." Order="4"
+                   Condition="NOT MATEERROR AND MATEPASSWORD &lt;&gt; MATEPASSWORD2" />
+          <Publish Property="MATEERROR" Value="The password cannot contain a double quote (&quot;) or end with a backslash (\)." Order="5"
+                   Condition="NOT MATEERROR AND MATEPASSWORD AND (MATEPASSWORD &gt;&lt; CHAR_QUOTE OR MATEPASSWORD &gt;&gt; CHAR_BACKSLASH)" />
+          <Publish Property="MATEERROR" Value="The password cannot start or end with a space." Order="6"
+                   Condition="NOT MATEERROR AND MATEPASSWORD AND (MATEPASSWORD &lt;&lt; CHAR_SPACE OR MATEPASSWORD &gt;&gt; CHAR_SPACE)" />
+          <Publish Event="SpawnDialog" Value="MateErrorDlg" Order="7" Condition="MATEERROR" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="8" Condition="NOT MATEERROR" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="MateErrorDlg" Width="260" Height="85" Title="[ProductName] Setup" NoMinimize="yes">
+        <Control Id="Message" Type="Text" X="15" Y="15" Width="230" Height="35" NoPrefix="yes" Text="[MATEERROR]" />
+        <Control Id="OK" Type="PushButton" X="102" Y="57" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIOK)">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Package>
+</Wix>

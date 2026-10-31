@@ -1,0 +1,41 @@
+[Unit]
+Description=LeapMotor Mate
+Documentation=https://github.com/ProtossBlaster/leapmotor-mate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=leapmotor-mate
+Group=leapmotor-mate
+WorkingDirectory=/var/lib/leapmotor-mate
+Environment=PYTHONPATH=/opt/leapmotor-mate/lib
+Environment=MATE_UV=/opt/leapmotor-mate/bin/uv
+Environment=MATE_CONFIG=/etc/leapmotor-mate/mate.env
+ExecStart=/opt/leapmotor-mate/venv/bin/python -m mate_server serve --config /etc/leapmotor-mate/mate.env
+
+# Mate's own relaunches (demo toggle, account switch) are handled inside the process; a real crash
+# exits non-zero and is restarted here.
+Restart=on-failure
+RestartSec=30
+# SIGTERM goes to the supervisor only; it stops poller and web itself and checkpoints the database.
+KillMode=mixed
+TimeoutStopSec=45
+
+# Hardening. The data directory is the only writable place — it holds the database, the payload
+# (so the service can update itself) and the Python environments.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/leapmotor-mate
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
